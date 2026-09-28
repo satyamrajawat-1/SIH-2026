@@ -81,37 +81,64 @@ class BaseDetector(ABC):
 class HSVContourDetector(BaseDetector):
     """
     Detects red, yellow, and large (brown/cardboard) boxes using HSV color
-    segmentation and contour analysis.  Zero model downloads, works on any
-    machine with OpenCV.
+    segmentation + contour analysis with skin-tone rejection.
 
-    Color ranges are intentionally generous — tune them for your actual
-    boxes / lighting by editing the dicts below.
+    Key safeguards against false positives:
+      - High saturation floors for red/yellow (S >= 150) exclude skin tones
+      - Explicit skin-mask subtraction for brown/cardboard detections
+      - Solidity + rectangularity filters reject irregular shapes (hands, faces)
     """
 
     # HSV ranges: (H_low, S_low, V_low, H_high, S_high, V_high)
     # OpenCV HSV: H 0-179, S 0-255, V 0-255
+    # Saturation floors set HIGH so that skin tones (S ~ 30-130) are excluded.
     COLOR_RANGES = {
         "red_box": [
-            # Red wraps around H=0, so we need two ranges
-            (0, 80, 80, 10, 255, 255),
-            (160, 80, 80, 179, 255, 255),
+            # Pure saturated red — S >= 150 reliably excludes skin
+            (0, 150, 80, 10, 255, 255),
+            (165, 150, 80, 179, 255, 255),
         ],
         "yellow_box": [
-            (18, 80, 80, 40, 255, 255),
+            # Pure saturated yellow — S >= 140 excludes skin
+            (20, 140, 100, 38, 255, 255),
         ],
         "large_box": [
-            # Brown / cardboard — broader range
-            (8, 40, 60, 22, 200, 220),
+            # Brown / cardboard — moderate saturation; uses skin masking
+            (8, 50, 60, 22, 200, 220),
         ],
     }
 
-    MIN_AREA = 2000      # ignore small noise blobs
-    MAX_AREA = 300000    # ignore frame-filling blobs
+    # Skin tone HSV range (subtracted from large_box mask)
+    SKIN_HSV_RANGES = [
+        (0, 20, 50, 35, 175, 255),
+    ]
+
+    MIN_AREA = 3500          # reject small blobs (was 2000)
+    MAX_AREA = 250000        # reject frame-filling blobs
+    MIN_AREA_LARGE_BOX = 8000  # large_box should be genuinely large
+    MIN_SOLIDITY = 0.70      # boxes are solid (hands w/ spread fingers ~ 0.4-0.6)
+    MIN_RECTANGULARITY = 0.55  # boxes fill their bounding rect well
+
+    def _create_skin_mask(self, hsv: np.ndarray) -> np.ndarray:
+        """Build a dilated binary mask of skin-toned pixels."""
+        skin = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        for (hl, sl, vl, hh, sh, vh) in self.SKIN_HSV_RANGES:
+            skin = cv2.bitwise_or(
+                skin,
+                cv2.inRange(hsv, np.array([hl, sl, vl]), np.array([hh, sh, vh])),
+            )
+        # Dilate generously so we also cover edges around skin
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        return cv2.dilate(skin, kernel, iterations=2)
 
     def detect(self, frame: np.ndarray) -> DetectionResult:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        # Apply slight blur to reduce noise
-        hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
+        hsv = cv2.GaussianBlur(hsv, (7, 7), 0)
+
+        # Pre-compute skin mask (used only for large_box disambiguation)
+        skin_mask = self._create_skin_mask(hsv)
+        not_skin = cv2.bitwise_not(skin_mask)
+
         detections: List[Detection] = []
 
         for label, ranges in self.COLOR_RANGES.items():
@@ -120,29 +147,45 @@ class HSVContourDetector(BaseDetector):
                 mask = cv2.inRange(hsv, np.array([hl, sl, vl]), np.array([hh, sh, vh]))
                 combined_mask = cv2.bitwise_or(combined_mask, mask)
 
-            # Morphological cleanup
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-            combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+            # Subtract skin regions from brown/cardboard detections
+            if label == "large_box":
+                combined_mask = cv2.bitwise_and(combined_mask, not_skin)
+
+            # Morphological cleanup (larger kernel for robustness)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+            combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
             combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
 
             contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL,
                                            cv2.CHAIN_APPROX_SIMPLE)
 
+            min_area = self.MIN_AREA_LARGE_BOX if label == "large_box" else self.MIN_AREA
+
             for cnt in contours:
                 area = cv2.contourArea(cnt)
-                if area < self.MIN_AREA or area > self.MAX_AREA:
+                if area < min_area or area > self.MAX_AREA:
                     continue
 
                 x, y, w, h = cv2.boundingRect(cnt)
                 aspect = w / max(h, 1)
-                # Rough box-likeness filter
-                if aspect < 0.3 or aspect > 3.5:
+                if aspect < 0.35 or aspect > 3.0:
                     continue
 
-                # Confidence heuristic: how rectangular is the contour?
+                # ── Shape-quality gates (reject non-box blobs) ──────────
+                # Solidity = contour area / convex hull area
+                hull = cv2.convexHull(cnt)
+                hull_area = cv2.contourArea(hull)
+                solidity = area / max(hull_area, 1)
+                if solidity < self.MIN_SOLIDITY:
+                    continue
+
+                # Rectangularity = contour area / bounding-rect area
                 rect_area = w * h
                 rectangularity = area / max(rect_area, 1)
-                confidence = min(1.0, rectangularity * 1.2)
+                if rectangularity < self.MIN_RECTANGULARITY:
+                    continue
+
+                confidence = min(1.0, rectangularity * solidity * 1.5)
 
                 cx, cy = x + w // 2, y + h // 2
                 detections.append(Detection(

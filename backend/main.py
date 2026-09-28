@@ -353,10 +353,21 @@ def on_step_transition(event: TransitionEvent):
 def processing_loop():
     """
     Main processing loop — runs in a background thread.
-    Captures frames, runs perception, updates state machine.
+    Captures frames at TARGET_FPS.  Heavy perception (detection + pose)
+    runs every *perception_skip* frames so the video stays smooth even on
+    slower hardware.
     """
     frame_interval = 1.0 / cfg.TARGET_FPS
-    logger.info("Processing loop started (target %d FPS)", cfg.TARGET_FPS)
+    perception_skip = 3              # run det+pose every Nth frame
+    frame_count = 0
+
+    # Cached perception results reused on non-perception frames
+    cached_det = DetectionResult()
+    cached_pose = PoseResult()
+    cached_interaction = InteractionResult()
+
+    logger.info("Processing loop started (target %d FPS, perception every %d frames)",
+                cfg.TARGET_FPS, perception_skip)
 
     while pipeline.processing_running:
         loop_start = time.time()
@@ -374,74 +385,70 @@ def processing_loop():
         with pipeline.frame_lock:
             pipeline.latest_frame = frame.copy()
 
-        # 2. Run object detection
-        det_result = DetectionResult()
-        if pipeline.detector:
-            try:
-                det_result = pipeline.detector.detect(frame)
-                pipeline.latest_detections = det_result
-            except Exception as e:
-                logger.error("Detection error: %s", e)
+        frame_count += 1
+        run_perception = (frame_count % perception_skip == 0)
 
-        # 3. Run pose estimation
-        pose_result = PoseResult()
-        if pipeline.pose_estimator:
-            try:
-                pose_result = pipeline.pose_estimator.estimate(frame)
-                pipeline.latest_pose = pose_result
-            except Exception as e:
-                logger.error("Pose error: %s", e)
+        # 2-4. Heavy perception — only every Nth frame
+        if run_perception:
+            if pipeline.detector:
+                try:
+                    cached_det = pipeline.detector.detect(frame)
+                    pipeline.latest_detections = cached_det
+                except Exception as e:
+                    logger.error("Detection error: %s", e)
 
-        # 4. Run interaction tracking
-        interaction_result = InteractionResult()
-        if pipeline.interaction_tracker:
-            try:
-                interaction_result = pipeline.interaction_tracker.update(
-                    det_result, pose_result
-                )
-                pipeline.latest_interaction = interaction_result
-            except Exception as e:
-                logger.error("Interaction error: %s", e)
+            if pipeline.pose_estimator:
+                try:
+                    cached_pose = pipeline.pose_estimator.estimate(frame)
+                    pipeline.latest_pose = cached_pose
+                except Exception as e:
+                    logger.error("Pose error: %s", e)
 
-        # 5. Update state machine (only during active session)
-        if pipeline.is_session_active and pipeline.state_machine:
-            try:
-                pipeline.state_machine.update(interaction_result)
-                pipeline.latest_state = pipeline.state_machine.get_state()
-                # Update person detection info
-                if pipeline.latest_state:
-                    pipeline.latest_state.person_detected = pose_result.person_detected
-                    pipeline.latest_state.person_confidence = pose_result.person_confidence
-            except Exception as e:
-                logger.error("State machine error: %s", e)
-        elif pipeline.state_machine:
-            # Even when no active session, keep state snapshot updated for GUI
-            try:
-                state = pipeline.state_machine.get_state()
-                state.person_detected = pose_result.person_detected
-                state.person_confidence = pose_result.person_confidence
-                state.detected_objects = interaction_result.objects_in_scene
-                state.object_states = interaction_result.object_states
-                state.latest_action = interaction_result.current_action.action
-                state.latest_action_target = interaction_result.current_action.target_object
-                state.latest_action_confidence = interaction_result.current_action.confidence
-                pipeline.latest_state = state
-            except Exception:
-                pass
+            if pipeline.interaction_tracker:
+                try:
+                    cached_interaction = pipeline.interaction_tracker.update(
+                        cached_det, cached_pose
+                    )
+                    pipeline.latest_interaction = cached_interaction
+                except Exception as e:
+                    logger.error("Interaction error: %s", e)
 
-        # 6. Draw annotations on frame
+            # 5. Update state machine (only during active session)
+            if pipeline.is_session_active and pipeline.state_machine:
+                try:
+                    pipeline.state_machine.update(cached_interaction)
+                    pipeline.latest_state = pipeline.state_machine.get_state()
+                    if pipeline.latest_state:
+                        pipeline.latest_state.person_detected = cached_pose.person_detected
+                        pipeline.latest_state.person_confidence = cached_pose.person_confidence
+                except Exception as e:
+                    logger.error("State machine error: %s", e)
+            elif pipeline.state_machine:
+                try:
+                    state = pipeline.state_machine.get_state()
+                    state.person_detected = cached_pose.person_detected
+                    state.person_confidence = cached_pose.person_confidence
+                    state.detected_objects = cached_interaction.objects_in_scene
+                    state.object_states = cached_interaction.object_states
+                    state.latest_action = cached_interaction.current_action.action
+                    state.latest_action_target = cached_interaction.current_action.target_object
+                    state.latest_action_confidence = cached_interaction.current_action.confidence
+                    pipeline.latest_state = state
+                except Exception:
+                    pass
+
+        # 6. Draw annotations on frame (every frame for smooth video)
         annotated = frame.copy()
         if pipeline.detector:
-            annotated = pipeline.detector.draw_detections(annotated, det_result)
+            annotated = pipeline.detector.draw_detections(annotated, cached_det)
         if pipeline.pose_estimator:
-            annotated = pipeline.pose_estimator.draw_pose(annotated, pose_result)
+            annotated = pipeline.pose_estimator.draw_pose(annotated, cached_pose)
 
-        # Draw step info overlay
         if pipeline.latest_state:
             _draw_status_overlay(annotated, pipeline.latest_state)
 
         with pipeline.frame_lock:
-            pipeline.latest_annotated_frame = annotated.copy()
+            pipeline.latest_annotated_frame = annotated
 
         # 7. Write to video
         if pipeline.video_writer and pipeline.video_writer.is_recording:
@@ -451,7 +458,7 @@ def processing_loop():
         if pipeline.network_sink and pipeline.network_sink.is_running:
             pipeline.network_sink.update_frame(annotated)
 
-        # 9. Build state JSON for WebSocket broadcast (done in this thread to avoid async issues)
+        # 9. Build state JSON for WebSocket broadcast
         _build_state_json()
 
         # Rate limit
@@ -816,12 +823,12 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 async def _ws_sender(ws: WebSocket):
-    """Push state updates to a single WebSocket client at ~4 FPS."""
+    """Push state updates to a single WebSocket client at ~14 FPS."""
     try:
         while True:
             if pipeline.latest_state_json:
                 await ws.send_text(pipeline.latest_state_json)
-            await asyncio.sleep(0.25)  # 4 updates/sec
+            await asyncio.sleep(0.07)  # ~14 updates/sec for smooth video
     except Exception:
         pass
 
