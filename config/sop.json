@@ -1,0 +1,87 @@
+{
+  "experiment_id": "sample_box_sorting_v1",
+  "experiment_name": "Red/Yellow Box Sample Retrieval",
+  "description": "Standard operating procedure for retrieving a sample from nested boxes. The operator opens a large container box, removes a red box and a yellow box, transfers the sample item from the red box into the yellow box, then closes everything.",
+  "steps": [
+    {
+      "step_id": 1,
+      "label": "open_large_box",
+      "description": "Open the large box",
+      "required_objects": ["large_box"],
+      "expected_action": "open",
+      "expected_object_states": {"large_box": "open"},
+      "expected_duration_sec": [2, 120],
+      "voice_prompt": "Step 1: Please open the large box."
+    },
+    {
+      "step_id": 2,
+      "label": "remove_red_box",
+      "description": "Remove the red box from the large box",
+      "required_objects": ["large_box", "red_box"],
+      "expected_action": "grasp_remove",
+      "expected_object_states": {"red_box": "outside_large_box"},
+      "expected_duration_sec": [2, 120],
+      "voice_prompt": "Step 2: Remove the red box from the large box."
+    },
+    {
+      "step_id": 3,
+      "label": "remove_yellow_box",
+      "description": "Remove the yellow box from the large box",
+      "required_objects": ["large_box", "yellow_box"],
+      "expected_action": "grasp_remove",
+      "expected_object_states": {"yellow_box": "outside_large_box"},
+      "expected_duration_sec": [2, 120],
+      "voice_prompt": "Step 3: Remove the yellow box from the large box."
+    },
+    {
+      "step_id": 4,
+      "label": "open_red_box",
+      "description": "Open the red box",
+      "required_objects": ["red_box"],
+      "expected_action": "open",
+      "expected_object_states": {"red_box": "open"},
+      "expected_duration_sec": [2, 120],
+      "voice_prompt": "Step 4: Open the red box."
+    },
+    {
+      "step_id": 5,
+      "label": "remove_sample",
+      "description": "Remove the sample item from the red box",
+      "required_objects": ["red_box", "sample_item"],
+      "expected_action": "grasp_remove",
+      "expected_object_states": {"sample_item": "in_hand"},
+      "expected_duration_sec": [2, 120],
+      "voice_prompt": "Step 5: Remove the sample item from the red box."
+    },
+    {
+      "step_id": 6,
+      "label": "place_sample_in_yellow",
+      "description": "Place the sample item into the yellow box",
+      "required_objects": ["yellow_box", "sample_item"],
+      "expected_action": "place",
+      "expected_object_states": {"sample_item": "in_yellow_box"},
+      "expected_duration_sec": [2, 120],
+      "voice_prompt": "Step 6: Place the sample item into the yellow box."
+    },
+    {
+      "step_id": 7,
+      "label": "close_yellow_box",
+      "description": "Close the yellow box",
+      "required_objects": ["yellow_box"],
+      "expected_action": "close",
+      "expected_object_states": {"yellow_box": "closed"},
+      "expected_duration_sec": [2, 120],
+      "voice_prompt": "Step 7: Close the yellow box."
+    },
+    {
+      "step_id": 8,
+      "label": "close_red_box",
+      "description": "Close the red box",
+      "required_objects": ["red_box"],
+      "expected_action": "close",
+      "expected_object_states": {"red_box": "closed"},
+      "expected_duration_sec": [2, 120],
+      "voice_prompt": "Step 8: Close the red box."
+    }
+  ]
+}

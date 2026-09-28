@@ -1,0 +1,35 @@
+# ===== SIH v0.1 — Python Dependencies =====
+# Install: pip install -r requirements.txt
+
+# --- Core ---
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+websockets==12.0
+python-dotenv==1.0.1
+python-multipart==0.0.9
+
+# --- Computer Vision ---
+opencv-python-headless==4.10.0.84
+numpy>=1.24.0,<2.0.0
+mediapipe==0.10.14
+
+# --- Object Detection (optional, for YOLO mode) ---
+# ultralytics==8.2.0
+
+# --- Pose (optional, for rtmlib mode) ---
+# rtmlib==0.1.0
+
+# --- TTS ---
+pyttsx3==2.98
+
+# --- STT (optional) ---
+# faster-whisper==1.0.3
+
+# --- Local LLM (optional) ---
+# ollama==0.3.0
+
+# --- Database ---
+aiosqlite==0.20.0
+
+# --- Utilities ---
+Pillow>=10.0.0
