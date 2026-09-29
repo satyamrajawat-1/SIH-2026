@@ -5,6 +5,11 @@ A finite-state machine that tracks experiment progress against the SOP.
 Each step can be in one of these states:
   PENDING, IN_PROGRESS, VALID, SKIPPED, OUT_OF_ORDER, UNCERTAIN, TIMEOUT
 
+v2 additions:
+  - World-state tracking via initial_state / postconditions
+  - Precondition checking before step transitions
+  - next_step-aware advancement (supports "COMPLETE" sentinel)
+
 The FSM emits status transitions that drive:
   - Voice alerts (on SKIPPED, OUT_OF_ORDER, TIMEOUT)
   - GUI updates (all transitions)
@@ -85,6 +90,8 @@ class ExperimentState:
     object_states: Dict[str, str] = field(default_factory=dict)
     person_detected: bool = False
     person_confidence: float = 0.0
+    # --- v2 ---
+    world_state: Dict[str, str] = field(default_factory=dict)
 
 
 class ExperimentStateMachine:
@@ -117,6 +124,9 @@ class ExperimentStateMachine:
         self._evidence_buffer: Dict[int, int] = {}  # step_id -> consecutive match count
         self._last_interaction: Optional[InteractionResult] = None
 
+        # v2: world state — tracks object/item states across the experiment
+        self._world_state: Dict[str, str] = dict(sop.initial_state)
+
         # Initialize step states
         for step in sop.steps:
             self._step_states.append(StepState(step=step))
@@ -132,6 +142,9 @@ class ExperimentStateMachine:
         self._is_complete = False
         self._current_step_index = 0
         self._evidence_buffer.clear()
+
+        # v2: reset world state to initial
+        self._world_state = dict(self.sop.initial_state)
 
         # Reset all steps
         for ss in self._step_states:
@@ -318,25 +331,98 @@ class ExperimentStateMachine:
         }
         return compatible.get((actual, expected), False)
 
+    def _check_preconditions(self, step_index: int) -> bool:
+        """Check whether the world state satisfies a step's preconditions.
+
+        Returns True if all preconditions are met (or there are none).
+        This is informational in v2 — the FSM logs warnings but does not
+        block transitions, preserving existing v1 behaviour.
+        """
+        step = self._step_states[step_index].step
+        if not step.preconditions:
+            return True
+
+        for key, expected in step.preconditions.items():
+            actual = self._world_state.get(key, "unknown")
+            if actual != expected:
+                logger.warning(
+                    "Step %d [%s] precondition UNMET: %s expected '%s', world has '%s'",
+                    step.step_id, step.label, key, expected, actual,
+                )
+                return False
+        return True
+
+    def _apply_postconditions(self, step_index: int) -> None:
+        """Apply a step's postconditions to the world state."""
+        step = self._step_states[step_index].step
+        if not step.postconditions:
+            return
+        for key, value in step.postconditions.items():
+            old = self._world_state.get(key, "unknown")
+            self._world_state[key] = value
+            if old != value:
+                logger.info(
+                    "World state: %s: '%s' → '%s' (step %d)",
+                    key, old, value, step.step_id,
+                )
+
     def _complete_current_step(self, confidence: float,
                                 evidence: List[str]) -> Optional[TransitionEvent]:
         """Mark current step as VALID and advance to next."""
+        # v2: check preconditions (informational)
+        self._check_preconditions(self._current_step_index)
+
         event = self._transition_step(
             self._current_step_index, StepStatus.VALID,
             confidence, evidence,
         )
 
-        # Advance to next step
-        if self._current_step_index + 1 < len(self._step_states):
-            self._current_step_index += 1
-            self._transition_step(
-                self._current_step_index, StepStatus.IN_PROGRESS,
-                0.0, ["auto_advance"],
-            )
-        else:
-            # All steps done
+        # v2: apply postconditions to world state
+        self._apply_postconditions(self._current_step_index)
+
+        # Advance to next step — v2 uses next_step field if available
+        current_step = self._step_states[self._current_step_index].step
+        if current_step.next_step == "COMPLETE":
             self._is_complete = True
             logger.info("Experiment COMPLETE — all steps validated")
+        elif current_step.next_step is not None and isinstance(current_step.next_step, int):
+            # Find the index of the next_step by step_id
+            next_index = None
+            for idx, ss in enumerate(self._step_states):
+                if ss.step.step_id == current_step.next_step:
+                    next_index = idx
+                    break
+            if next_index is not None:
+                self._current_step_index = next_index
+                self._transition_step(
+                    self._current_step_index, StepStatus.IN_PROGRESS,
+                    0.0, ["auto_advance"],
+                )
+            else:
+                logger.error(
+                    "next_step %d not found in SOP — falling back to sequential",
+                    current_step.next_step,
+                )
+                if self._current_step_index + 1 < len(self._step_states):
+                    self._current_step_index += 1
+                    self._transition_step(
+                        self._current_step_index, StepStatus.IN_PROGRESS,
+                        0.0, ["auto_advance"],
+                    )
+                else:
+                    self._is_complete = True
+                    logger.info("Experiment COMPLETE — all steps validated")
+        else:
+            # v1 fallback: sequential advancement
+            if self._current_step_index + 1 < len(self._step_states):
+                self._current_step_index += 1
+                self._transition_step(
+                    self._current_step_index, StepStatus.IN_PROGRESS,
+                    0.0, ["auto_advance"],
+                )
+            else:
+                self._is_complete = True
+                logger.info("Experiment COMPLETE — all steps validated")
 
         return event
 
@@ -446,7 +532,7 @@ class ExperimentStateMachine:
 
         step_states_data = []
         for ss in self._step_states:
-            step_states_data.append({
+            step_data = {
                 "step_id": ss.step.step_id,
                 "label": ss.step.label,
                 "description": ss.step.description,
@@ -454,7 +540,15 @@ class ExperimentStateMachine:
                 "confidence": ss.confidence,
                 "evidence": ss.evidence,
                 "voice_prompt": ss.step.voice_prompt,
-            })
+            }
+            # v2: include action_type, preconditions, postconditions if present
+            if ss.step.action_type:
+                step_data["action_type"] = ss.step.action_type
+            if ss.step.preconditions:
+                step_data["preconditions"] = ss.step.preconditions
+            if ss.step.postconditions:
+                step_data["postconditions"] = ss.step.postconditions
+            step_states_data.append(step_data)
 
         now = time.time()
         return ExperimentState(
@@ -478,6 +572,7 @@ class ExperimentStateMachine:
             object_states=object_states,
             person_detected=person_detected,
             person_confidence=person_conf,
+            world_state=dict(self._world_state),
         )
 
     def force_complete_step(self, step_id: int) -> Optional[TransitionEvent]:

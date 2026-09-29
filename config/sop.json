@@ -2,6 +2,22 @@
   "experiment_id": "sample_box_sorting_v1",
   "experiment_name": "Red/Yellow Box Sample Retrieval",
   "description": "Standard operating procedure for retrieving a sample from nested boxes. The operator opens a large container box, removes a red box and a yellow box, transfers the sample item from the red box into the yellow box, then closes everything.",
+  "version": "2.0",
+
+  "objects": ["astronaut", "large_box", "red_box", "yellow_box", "sample_item"],
+
+  "action_types": ["BACKGROUND", "OPEN", "GRASP_REMOVE", "PLACE", "CLOSE"],
+
+  "initial_state": {
+    "large_box": "closed",
+    "red_box": "inside_large_box",
+    "yellow_box": "inside_large_box",
+    "red_box_state": "closed",
+    "yellow_box_state": "closed",
+    "sample_item": "inside_red_box",
+    "sample_item_hand_state": "not_in_hand"
+  },
+
   "steps": [
     {
       "step_id": 1,
@@ -11,7 +27,19 @@
       "expected_action": "open",
       "expected_object_states": {"large_box": "open"},
       "expected_duration_sec": [2, 120],
-      "voice_prompt": "Step 1: Please open the large box."
+      "voice_prompt": "Step 1: Please open the large box.",
+
+      "action_type": "OPEN",
+      "object": "large_box",
+      "source": null,
+      "target": null,
+      "preconditions": {
+        "large_box": "closed"
+      },
+      "postconditions": {
+        "large_box": "open"
+      },
+      "next_step": 2
     },
     {
       "step_id": 2,
@@ -21,7 +49,20 @@
       "expected_action": "grasp_remove",
       "expected_object_states": {"red_box": "outside_large_box"},
       "expected_duration_sec": [2, 120],
-      "voice_prompt": "Step 2: Remove the red box from the large box."
+      "voice_prompt": "Step 2: Remove the red box from the large box.",
+
+      "action_type": "GRASP_REMOVE",
+      "object": "red_box",
+      "source": "large_box",
+      "target": null,
+      "preconditions": {
+        "large_box": "open",
+        "red_box": "inside_large_box"
+      },
+      "postconditions": {
+        "red_box": "outside_large_box"
+      },
+      "next_step": 3
     },
     {
       "step_id": 3,
@@ -31,7 +72,20 @@
       "expected_action": "grasp_remove",
       "expected_object_states": {"yellow_box": "outside_large_box"},
       "expected_duration_sec": [2, 120],
-      "voice_prompt": "Step 3: Remove the yellow box from the large box."
+      "voice_prompt": "Step 3: Remove the yellow box from the large box.",
+
+      "action_type": "GRASP_REMOVE",
+      "object": "yellow_box",
+      "source": "large_box",
+      "target": null,
+      "preconditions": {
+        "large_box": "open",
+        "yellow_box": "inside_large_box"
+      },
+      "postconditions": {
+        "yellow_box": "outside_large_box"
+      },
+      "next_step": 4
     },
     {
       "step_id": 4,
@@ -41,7 +95,20 @@
       "expected_action": "open",
       "expected_object_states": {"red_box": "open"},
       "expected_duration_sec": [2, 120],
-      "voice_prompt": "Step 4: Open the red box."
+      "voice_prompt": "Step 4: Open the red box.",
+
+      "action_type": "OPEN",
+      "object": "red_box",
+      "source": null,
+      "target": null,
+      "preconditions": {
+        "red_box": "outside_large_box",
+        "red_box_state": "closed"
+      },
+      "postconditions": {
+        "red_box_state": "open"
+      },
+      "next_step": 5
     },
     {
       "step_id": 5,
@@ -51,7 +118,21 @@
       "expected_action": "grasp_remove",
       "expected_object_states": {"sample_item": "in_hand"},
       "expected_duration_sec": [2, 120],
-      "voice_prompt": "Step 5: Remove the sample item from the red box."
+      "voice_prompt": "Step 5: Remove the sample item from the red box.",
+
+      "action_type": "GRASP_REMOVE",
+      "object": "sample_item",
+      "source": "red_box",
+      "target": null,
+      "preconditions": {
+        "red_box_state": "open",
+        "sample_item": "inside_red_box"
+      },
+      "postconditions": {
+        "sample_item": "in_hand",
+        "sample_item_hand_state": "in_hand"
+      },
+      "next_step": 6
     },
     {
       "step_id": 6,
@@ -61,7 +142,22 @@
       "expected_action": "place",
       "expected_object_states": {"sample_item": "in_yellow_box"},
       "expected_duration_sec": [2, 120],
-      "voice_prompt": "Step 6: Place the sample item into the yellow box."
+      "voice_prompt": "Step 6: Place the sample item into the yellow box.",
+
+      "action_type": "PLACE",
+      "object": "sample_item",
+      "source": "in_hand",
+      "target": "yellow_box",
+      "preconditions": {
+        "sample_item": "in_hand",
+        "yellow_box": "outside_large_box"
+      },
+      "postconditions": {
+        "yellow_box_state": "open",
+        "sample_item": "in_yellow_box",
+        "sample_item_hand_state": "not_in_hand"
+      },
+      "next_step": 7
     },
     {
       "step_id": 7,
@@ -71,7 +167,20 @@
       "expected_action": "close",
       "expected_object_states": {"yellow_box": "closed"},
       "expected_duration_sec": [2, 120],
-      "voice_prompt": "Step 7: Close the yellow box."
+      "voice_prompt": "Step 7: Close the yellow box.",
+
+      "action_type": "CLOSE",
+      "object": "yellow_box",
+      "source": null,
+      "target": null,
+      "preconditions": {
+        "sample_item": "in_yellow_box",
+        "yellow_box_state": "open"
+      },
+      "postconditions": {
+        "yellow_box_state": "closed"
+      },
+      "next_step": 8
     },
     {
       "step_id": 8,
@@ -81,7 +190,20 @@
       "expected_action": "close",
       "expected_object_states": {"red_box": "closed"},
       "expected_duration_sec": [2, 120],
-      "voice_prompt": "Step 8: Close the red box."
+      "voice_prompt": "Step 8: Close the red box.",
+
+      "action_type": "CLOSE",
+      "object": "red_box",
+      "source": null,
+      "target": null,
+      "preconditions": {
+        "red_box_state": "open",
+        "yellow_box_state": "closed"
+      },
+      "postconditions": {
+        "red_box_state": "closed"
+      },
+      "next_step": "COMPLETE"
     }
   ]
 }
